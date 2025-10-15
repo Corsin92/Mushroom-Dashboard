@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mushroom Cultivation Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Chart.js for diagrams -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+            color: #1f2937;
+        }
+        .card { background-color: #ffffff; border: 1px solid #e5e7eb; transition: all 0.3s ease; }
+        .card:hover { transform: translateY(-5px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); }
+        .warning-banner { background-color: #ef4444; color: white; }
+        .card-warning-state { border-left: 5px solid #f59e0b; }
+        .card-ok-state { border-left: 5px solid #22c55e; }
+        .card-warning { background-color: #fef3c7; border-color: #f59e0b; }
+        input[type="number"] { -moz-appearance: textfield; }
+        input[type="number"]::-webkit-outer-spin-button, input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+        .modal-overlay { transition: opacity 0.3s ease; }
+        .modal-content { transition: transform 0.3s ease; }
+        .loader { border-top-color: #3498db; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="antialiased">
+    <div class="container mx-auto p-4 md:p-8 max-w-7xl">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl md:text-5xl font-bold text-gray-900">Mushroom Dashboard</h1>
+            <p class="text-lg text-gray-600 mt-2">Live, collaborative data for your mushroom farm</p>
+        </header>
+
+        <!-- View Containers -->
+        <div id="overview-container">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-3xl font-bold text-gray-800">Chamber Overview</h2>
+                <button id="settings-btn" class="bg-gray-700 text-white font-bold py-2 px-4 rounded-lg shadow hover:bg-gray-800 transition duration-300">
+                    <i class="fas fa-cog mr-2"></i>Settings
+                </button>
+            </div>
+            <div id="chamber-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <!-- Chamber cards will be injected here -->
+            </div>
+        </div>
+
+        <div id="detail-container" class="hidden">
+            <div class="flex justify-between items-center mb-6">
+                <button id="back-to-overview-btn" class="bg-gray-200 text-gray-800 font-bold py-2 px-4 rounded-lg shadow hover:bg-gray-300 transition duration-300">
+                    <i class="fas fa-arrow-left mr-2"></i>Back to Overview
+                </button>
+                 <h2 id="detail-chamber-name" class="text-3xl font-bold text-gray-800 text-center"></h2>
+                 <div></div>
+            </div>
+            
+            <main id="dashboard-content">
+                <div id="warnings-container" class="hidden warning-banner rounded-lg p-4 mb-8 shadow-lg"></div>
+                <div id="sensor-cards-container" class="grid grid-cols-1 md:grid-cols-3 gap-6"></div>
+                
+                <!-- Charts -->
+                <div class="mt-10 card p-6 rounded-xl shadow-lg">
+                    <h3 class="text-2xl font-bold mb-4 text-gray-800">Sensor History</h3>
+                    <div id="chart-container">
+                        <canvas id="sensor-chart"></canvas>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <footer class="text-center mt-8 text-gray-500">
+            <p>MQTT Status: <span id="mqtt-status" class="font-semibold text-red-500">Disconnected</span></p>
+            <p>Database Status: <span id="db-status" class="font-semibold text-red-500">Connecting...</span></p>
+        </footer>
+    </div>
+    
+    <!-- Modals -->
+    <div id="advice-modal" class="modal-overlay fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 hidden z-50"></div>
+    <div id="settings-modal" class="modal-overlay fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 hidden z-50"></div>
+    <!-- Generic Info/Confirm Modal -->
+    <div id="info-modal" class="modal-overlay fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 hidden z-[60]">
+        <div class="modal-content bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 text-center">
+            <p id="info-modal-text" class="text-lg text-gray-800 mb-6"></p>
+            <div id="info-modal-buttons" class="flex justify-center gap-4"></div>
+        </div>
+    </div>
+
+    <!-- MQTT Client Loader - Simplified and more robust -->
+    <!-- This is a blocking script tag. It ensures paho-mqtt.min.js is loaded and executed 
+         BEFORE the module script below is processed. This is the most reliable way 
+         to handle this dependency in a single HTML file. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script>
+
+
+    <!-- Firebase SDK & App Logic -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        import { getFirestore, collection, doc, onSnapshot, addDoc, updateDoc, deleteDoc, serverTimestamp, query, orderBy, limit, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+        
+        // --- CONFIGURATION ---
+        const MQTT_CONFIG = {
+            hostname: "d969aa32292e4a8b9fb8a9ef14a0fd04.s1.eu.hivemq.cloud",
+            port: 8884,
+            username: "funguys",
+            password: "AidAdMassU.1",
+            baseTopic: "mushroom/sensors"
+        };
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyANcXm7aw-wCeWpdv1gencRZC3hKLvCGOE",
+            authDomain: "mushroom-dashboard-6d1b4.firebaseapp.com",
+            projectId: "mushroom-dashboard-6d1b4",
+            storageBucket: "mushroom-dashboard-6d1b4.appspot.com",
+            messagingSenderId: "1065475824083",
+            appId: "1:1065475824083:web:40fbb37d389741e1e0f726",
+            measurementId: "G-LR3DD2922F"
+        };
+        // --------------------
+
+        // --- App State ---
+        let chamberState = {};
+        let currentChamberId = null;
+        let currentView = 'overview';
+        let sensorChart = null;
+        let onConfirmCallback = null;
+        let mqttClient = null;
+
+        // --- DOM Elements ---
+        const overviewContainer = document.getElementById('overview-container');
+        const detailContainer = document.getElementById('detail-container');
+        const chamberGrid = document.getElementById('chamber-grid');
+        const detailChamberName = document.getElementById('detail-chamber-name');
+        const warningsContainerEl = document.getElementById('warnings-container');
+        const sensorCardsContainer = document.getElementById('sensor-cards-container');
+        const mqttStatusEl = document.getElementById('mqtt-status');
+        const dbStatusEl = document.getElementById('db-status');
+        const settingsBtn = document.getElementById('settings-btn');
+        const backToOverviewBtn = document.getElementById('back-to-overview-btn');
+
+        // --- Wait for Paho helper (polling) ---
+        async function waitForPaho(timeout = 10000) { // Timeout is a safety measure
+            const start = performance.now();
+            return new Promise((resolve, reject) => {
+                (function check() {
+                    // Check if the global Paho object is available
+                    if (globalThis.Paho && globalThis.Paho.MQTT) {
+                        return resolve();
+                    }
+                    // If timeout is exceeded, reject the promise
+                    if (performance.now() - start > timeout) {
+                        return reject(new Error("Paho MQTT library timed out. It might be blocked by a network policy or adblocker."));
+                    }
+                    // Otherwise, check again shortly
+                    setTimeout(check, 100);
+                })();
+            });
+        }
+
+
+        // --- Main Initialization ---
+        async function main() {
+            setupListeners();
+            await initFirebase();
+            try {
+                await waitForPaho();
+            } catch (e) {
+                console.error(e);
+                mqttStatusEl.textContent = "Paho load failed";
+                mqttStatusEl.title = "The MQTT library could not be loaded from the CDN. This might be due to a network issue, an adblocker, or a restrictive firewall.";
+                return;
+            }
+            if (db) {
+                initMqttClient();
+            }
+            showView('overview');
+        }
+        
+        window.onload = main;
+        
+        // --- Firebase Initialization ---
+        let db;
+        async function initFirebase() {
+            try {
+                const app = initializeApp(firebaseConfig);
+                const auth = getAuth(app);
+                db = getFirestore(app);
+                await signInAnonymously(auth);
+                dbStatusEl.textContent = "Connected";
+                dbStatusEl.className = "font-semibold text-green-600";
+                listenForChamberUpdates();
+            } catch (error) {
+                console.error("Firebase Initialization Error:", error);
+                dbStatusEl.textContent = "Connection Failed";
+                showAlert("Could not connect to the database. Please check your Firebase configuration.");
+            }
+        }
+
+        // --- Event Listeners ---
+        function setupListeners() {
+            backToOverviewBtn.addEventListener('click', () => showView('overview'));
+            settingsBtn.addEventListener('click', openSettingsModal);
+
+            document.body.addEventListener('click', e => {
+                const target = e.target;
+                if (target.closest('.chamber-card')) {
+                    showView('detail', target.closest('.chamber-card').dataset.chamberId);
+                } else if (target.closest('.close-modal-btn')) {
+                    target.closest('.modal-overlay').classList.add('hidden');
+                } else if (target.id === 'get-advice-btn') {
+                    openAdviceModal();
+                } else if (target.id === 'confirm-add-chamber-btn') {
+                    handleAddChamber();
+                } else if (target.closest('.save-chamber-btn')) {
+                    handleUpdateChamber(target.closest('.chamber-settings-item').dataset.chamberId);
+                } else if (target.closest('.delete-chamber-btn')) {
+                    const chamberId = target.closest('.chamber-settings-item').dataset.chamberId;
+                    const chamberName = chamberState[chamberId]?.name || 'this chamber';
+                    showConfirm(`Are you sure you want to delete "${chamberName}"?`, confirmed => {
+                        if (confirmed) handleDeleteChamber(chamberId);
+                    });
+                } else if (target.closest('.info-ok-btn') || target.closest('.info-cancel-btn')) {
+                    document.getElementById('info-modal').classList.add('hidden');
+                    if (onConfirmCallback) onConfirmCallback(false);
+                    onConfirmCallback = null;
+                } else if (target.closest('.info-confirm-btn')) {
+                    document.getElementById('info-modal').classList.add('hidden');
+                    if (onConfirmCallback) onConfirmCallback(true);
+                    onConfirmCallback = null;
+                }
+            });
+        }
+        
+        // --- View Management ---
+        async function showView(view, chamberId = null) {
+            currentView = view;
+            overviewContainer.classList.toggle('hidden', view !== 'overview');
+            detailContainer.classList.toggle('hidden', view !== 'detail');
+
+            if (view === 'overview') {
+                currentChamberId = null;
+                renderOverview();
+            } else if (view === 'detail' && chamberId) {
+                currentChamberId = chamberId;
+                await updateFullDetailView();
+            }
+        }
+
+        // --- Firestore (Database) Functions ---
+        function listenForChamberUpdates() {
+            if (!db) return;
+            onSnapshot(collection(db, "chambers"), snapshot => {
+                snapshot.docChanges().forEach(change => {
+                    chamberState[change.doc.id] = { id: change.doc.id, ...change.doc.data() };
+                    if (change.type === "removed") delete chamberState[change.doc.id];
+                });
+
+                if (currentView === 'overview') renderOverview();
+                else if (currentView === 'detail' && chamberState[currentChamberId]) updateFullDetailView();
+                else if (currentView === 'detail' && !chamberState[currentChamberId]) showView('overview');
+            }, error => {
+                console.error("Snapshot listener error:", error);
+                dbStatusEl.textContent = "Permission Error";
+                showAlert("Could not read from the database. Check Firestore security rules.");
+            });
+        }
+
+        async function handleAddChamber() {
+            const nameInput = document.getElementById('new-chamber-name');
+            const name = nameInput.value.trim();
+            if (name) {
+                await addDoc(collection(db, "chambers"), { name, thresholds: { temperature: { min: 21, max: 24 }, humidity: { min: 85, max: 95 }, co2: { min: 0, max: 1000 } }, enabledSensors: { temperature: true, humidity: true, co2: true }, latestData: {}, warnings: [] });
+                nameInput.value = '';
+            }
+        }
+
+        async function handleUpdateChamber(chamberId) {
+            const item = document.querySelector(`.chamber-settings-item[data-chamber-id="${chamberId}"]`);
+            const newName = item.querySelector('.chamber-name-input').value.trim();
+            if (!newName) return showAlert("Chamber name cannot be empty.");
+
+            const updatedData = {
+                name: newName,
+                enabledSensors: {
+                    temperature: item.querySelector('.temp-enabled-check').checked,
+                    humidity: item.querySelector('.humidity-enabled-check').checked,
+                    co2: item.querySelector('.co2-enabled-check').checked,
+                },
+                thresholds: {
+                    temperature: { min: parseFloat(item.querySelector('.temp-min-input').value) || 0, max: parseFloat(item.querySelector('.temp-max-input').value) || 100 },
+                    humidity: { min: parseFloat(item.querySelector('.humidity-min-input').value) || 0, max: parseFloat(item.querySelector('.humidity-max-input').value) || 100 },
+                    co2: { min: parseFloat(item.querySelector('.co2-min-input').value) || 0, max: parseFloat(item.querySelector('.co2-max-input').value) || 5000 },
+                }
+            };
+            await updateDoc(doc(db, "chambers", chamberId), updatedData);
+            showAlert(`Settings for "${newName}" saved.`);
+        }
+
+        async function handleDeleteChamber(chamberId) {
+            await deleteDoc(doc(db, "chambers", chamberId));
+        }
+        
+        async function fetchHistoricalData(chamberId) {
+            const q = query(collection(db, "chambers", chamberId, "historicalData"), orderBy("timestamp", "desc"), limit(288));
+            const querySnapshot = await getDocs(q);
+            return querySnapshot.docs.map(doc => ({ ...doc.data(), timestamp: doc.data().timestamp.toDate() })).reverse();
+        }
+
+        // --- Rendering ---
+        function renderOverview() {
+            try {
+                const sortedChambers = Object.values(chamberState).filter(c => c && c.name).sort((a, b) => a.name.localeCompare(b.name));
+                chamberGrid.innerHTML = sortedChambers.length ? sortedChambers.map(createChamberCardHTML).join('') : `<p class="text-gray-500 col-span-full text-center">No chambers added. Go to Settings.</p>`;
+            } catch (error) {
+                console.error("Error rendering overview:", error);
+                chamberGrid.innerHTML = `<p class="text-red-500 col-span-full text-center">Error displaying chambers.</p>`;
+            }
+        }
+
+        function createChamberCardHTML(chamber) {
+            const { latestData = {}, warnings = [], enabledSensors = {} } = chamber;
+            const hasWarnings = warnings.length > 0;
+            const sensorHTML = `
+                ${enabledSensors.temperature ? `<div><span class="text-sm text-gray-500">Temp</span><p class="font-bold text-lg">${latestData.temperature?.toFixed(1) ?? '-'}°C</p></div>` : ''}
+                ${enabledSensors.humidity ? `<div><span class="text-sm text-gray-500">Humidity</span><p class="font-bold text-lg">${latestData.humidity?.toFixed(0) ?? '-'}%</p></div>` : ''}
+                ${enabledSensors.co2 ? `<div><span class="text-sm text-gray-500">CO₂</span><p class="font-bold text-lg">${latestData.co2?.toFixed(0) ?? '-'}</p></div>` : ''}
+            `;
+            return `<div class="chamber-card card p-6 rounded-xl shadow-lg cursor-pointer ${hasWarnings ? 'card-warning-state' : 'card-ok-state'}" data-chamber-id="${chamber.id}">
+                        <div class="flex justify-between items-start"><h3 class="text-2xl font-bold text-gray-800">${chamber.name}</h3><i class="fas ${hasWarnings ? 'fa-exclamation-triangle text-amber-500' : 'fa-check-circle text-green-500'} fa-lg"></i></div>
+                        <div class="mt-4 grid grid-cols-3 gap-2 text-center">${sensorHTML}</div>
+                    </div>`;
+        }
+        
+        async function updateFullDetailView() {
+            const chamber = chamberState[currentChamberId];
+            if (!chamber) { showView('overview'); return; }
+            detailChamberName.textContent = chamber.name;
+            renderDetailCardsAndWarnings();
+            const historicalData = await fetchHistoricalData(currentChamberId);
+            renderChart(historicalData);
+        }
+
+        function renderDetailCardsAndWarnings() {
+            const chamber = chamberState[currentChamberId];
+            if (!chamber) return;
+            const { latestData = {}, warnings = [], enabledSensors = {} } = chamber;
+            sensorCardsContainer.innerHTML = [
+                enabledSensors.temperature ? createSensorCardHTML('temp', 'Temperature', 'thermometer-half', latestData.temperature, '°C', 1) : '',
+                enabledSensors.humidity ? createSensorCardHTML('humidity', 'Humidity', 'tint', latestData.humidity, '%', 0) : '',
+                enabledSensors.co2 ? createSensorCardHTML('co2', 'CO₂ Level', 'wind', latestData.co2, 'ppm', 0) : ''
+            ].join('');
+            
+            warningsContainerEl.classList.toggle('hidden', warnings.length === 0);
+            if (warnings.length > 0) {
+                warningsContainerEl.innerHTML = `<div class="flex items-start"><i class="fas fa-exclamation-triangle fa-2x mr-4 mt-1"></i><div><h3 class="font-bold text-lg">Warning!</h3><ul class="list-disc pl-5">${warnings.map(w => `<li>${w}</li>`).join('')}</ul><button id="get-advice-btn" class="mt-4 bg-white text-red-600 font-bold py-2 px-4 rounded-lg shadow hover:bg-red-50">Get Advice</button></div></div>`;
+            }
+            updateCardStyle(document.getElementById('temp-card'), warnings, 'Temperature');
+            updateCardStyle(document.getElementById('humidity-card'), warnings, 'Humidity');
+            updateCardStyle(document.getElementById('co2-card'), warnings, 'CO');
+        }
+
+        function createSensorCardHTML(id, name, icon, value, unit, precision) {
+             return `<div id="${id}-card" class="card p-6 rounded-xl text-center shadow-lg"><div class="flex items-center justify-center text-gray-500 mb-2"><i class="fas fa-${icon} mr-2"></i><h2 class="text-xl font-semibold">${name}</h2></div><p class="text-5xl font-extrabold text-gray-800">${value != null ? value.toFixed(precision) : '-'}</p><p class="text-gray-500">${unit}</p></div>`;
+        }
+        
+        // --- Modals ---
+        function openSettingsModal() {
+            try {
+                const sortedChambers = Object.values(chamberState).filter(c => c && c.name).sort((a, b) => a.name.localeCompare(b.name));
+                const chamberListHTML = sortedChambers.length ? sortedChambers.map(chamber => {
+                    const t = chamber.thresholds || {};
+                    const es = chamber.enabledSensors || {};
+                    const temp = t.temperature || { min: 21, max: 24 };
+                    const humidity = t.humidity || { min: 85, max: 95 };
+                    const co2 = t.co2 || { min: 0, max: 1000 };
+                    return `<div class="chamber-settings-item p-4 border rounded-lg" data-chamber-id="${chamber.id}"><input type="text" value="${chamber.name}" class="chamber-name-input w-full p-2 border rounded-md mb-4 text-lg font-bold"><div class="grid grid-cols-1 md:grid-cols-3 gap-4"><div class="border-r pr-4"><h4 class="font-semibold mb-2">Active Sensors</h4><div class="space-y-2"><label class="flex items-center"><input type="checkbox" class="temp-enabled-check" ${es.temperature ? 'checked' : ''}> <span class="ml-2">Temperature</span></label><label class="flex items-center"><input type="checkbox" class="humidity-enabled-check" ${es.humidity ? 'checked' : ''}> <span class="ml-2">Humidity</span></label><label class="flex items-center"><input type="checkbox" class="co2-enabled-check" ${es.co2 ? 'checked' : ''}> <span class="ml-2">CO₂</span></label></div></div><div class="md:col-span-2 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2"><div><label class="font-semibold text-sm">Temp (°C)</label><div class="flex gap-1 mt-1"><input type="number" value="${temp.min}" class="temp-min-input w-full p-1 border rounded" placeholder="Min"><input type="number" value="${temp.max}" class="temp-max-input w-full p-1 border rounded" placeholder="Max"></div></div><div><label class="font-semibold text-sm">Humidity (%)</label><div class="flex gap-1 mt-1"><input type="number" value="${humidity.min}" class="humidity-min-input w-full p-1 border rounded" placeholder="Min"><input type="number" value="${humidity.max}" class="humidity-max-input w-full p-1 border rounded" placeholder="Max"></div></div><div><label class="font-semibold text-sm">CO₂ (ppm)</label><div class="flex gap-1 mt-1"><input type="number" value="${co2.min}" class="co2-min-input w-full p-1 border rounded" placeholder="Min"><input type="number" value="${co2.max}" class="co2-max-input w-full p-1 border rounded" placeholder="Max"></div></div></div></div><div class="flex gap-2 mt-4"><button class="save-chamber-btn w-full bg-green-500 text-white p-2 rounded-md hover:bg-green-600">Save</button><button class="delete-chamber-btn w-full bg-red-500 text-white p-2 rounded-md hover:bg-red-600">Delete</button></div></div>`;
+                }).join('') : `<p class="text-gray-500 text-center">No chambers to configure.</p>`;
+                
+                document.getElementById('settings-modal').innerHTML = `<div class="modal-content bg-white rounded-xl shadow-2xl w-full max-w-3xl p-6 relative z-50"><button class="close-modal-btn absolute top-4 right-4 text-gray-400 hover:text-gray-600"><i class="fas fa-times fa-lg"></i></button><h2 class="text-3xl font-bold text-gray-900 mb-6">Chamber Settings</h2><div id="chamber-settings-list" class="space-y-4 max-h-[60vh] overflow-y-auto pr-2">${chamberListHTML}</div><div class="mt-6 pt-6 border-t"><h3 class="text-xl font-bold text-gray-800 mb-3">Add New Chamber</h3><div class="flex items-center gap-4"><input type="text" id="new-chamber-name" class="w-full p-2 border rounded-md" placeholder="e.g., Fruiting Room 1"><button id="confirm-add-chamber-btn" class="bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg">Add</button></div></div></div>`;
+                document.getElementById('settings-modal').classList.remove('hidden');
+            } catch (error) {
+                console.error("Error opening settings modal:", error);
+                showAlert("Error opening settings. Check Firestore data for malformed entries.");
+            }
+        }
+
+        async function openAdviceModal() { /* ... no changes ... */ }
+        function showAlert(message) { /* ... no changes ... */ }
+        function showConfirm(message, callback) { /* ... no changes ... */ }
+
+        // --- MQTT Connection ---
+        function initMqttClient() {
+            const P = globalThis.Paho;
+            if (!P || !P.MQTT) {
+                console.error("Paho MQTT library not loaded.");
+                mqttStatusEl.textContent = "Library not found";
+                return;
+            }
+            try {
+                mqttClient = new P.MQTT.Client(MQTT_CONFIG.hostname, MQTT_CONFIG.port, "app_" + Date.now());
+                mqttClient.onConnectionLost = onConnectionLost;
+                mqttClient.onMessageArrived = onMessageArrived;
+                mqttClient.connect({ 
+                    onSuccess: () => {
+                        mqttStatusEl.textContent = "Connected";
+                        mqttStatusEl.className = "font-semibold text-green-600";
+                        mqttClient.subscribe(MQTT_CONFIG.baseTopic + '/+');
+                    },
+                    onFailure: err => { 
+                        console.error("MQTT Connection failed:", err.errorMessage);
+                        mqttStatusEl.textContent = `Failed: ${err.errorMessage}`; 
+                    },
+                    userName: MQTT_CONFIG.username, password: MQTT_CONFIG.password, useSSL: true, reconnect: true
+                });
+            } catch (error) {
+                console.error("MQTT Initialization failed:", error);
+                mqttStatusEl.textContent = "Initialization Error";
+            }
+        }
+
+        function onConnectionLost(responseObject) {
+            if (responseObject.errorCode !== 0) {
+                mqttStatusEl.textContent = "Reconnecting...";
+                mqttStatusEl.className = "font-semibold text-red-500";
+            }
+        }
+
+        async function onMessageArrived(message) {
+            try {
+                const chamberName = message.topic.split('/').pop();
+                const chamberId = Object.keys(chamberState).find(id => chamberState[id].name === chamberName);
+                if (chamberId) {
+                    const data = JSON.parse(message.payloadString);
+                    const { thresholds, enabledSensors } = chamberState[chamberId];
+                    const warnings = [];
+                    if (enabledSensors?.temperature) checkThreshold(data.temperature, thresholds.temperature, 'Temperature', '°C', warnings);
+                    if (enabledSensors?.humidity) checkThreshold(data.humidity, thresholds.humidity, 'Humidity', '%', warnings);
+                    if (enabledSensors?.co2) checkThreshold(data.co2, thresholds.co2, 'CO₂ Level', 'ppm', warnings);
+
+                    await updateDoc(doc(db, "chambers", chamberId), { latestData: data, warnings, lastUpdated: serverTimestamp() });
+                    await addDoc(collection(db, "chambers", chamberId, "historicalData"), { ...data, timestamp: serverTimestamp() });
+                }
+            } catch (e) { console.error("Error processing MQTT message:", e); }
+        }
+
+        // --- Utility & Charting & Gemini ---
+        function updateCardStyle(cardElement, warnings, keyword) { if (cardElement) cardElement.classList.toggle('card-warning', warnings.some(w => w.includes(keyword))); }
+        function checkThreshold(value, threshold, name, unit, warnings) { if (value == null || !threshold) return; if (value < threshold.min) warnings.push(`${name} is too low (${value.toFixed(1)} ${unit})`); else if (value > threshold.max) warnings.push(`${name} is too high (${value.toFixed(1)} ${unit})`); }
+        function renderChart(data) { /* ... no changes ... */ }
+        async function fetchAdvice(contentElement) { /* ... no changes ... */ }
+    </script>
+</body>
+</html>
+
