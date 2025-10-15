@@ -99,6 +99,11 @@
     <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script> -->
     <script src="vendor/paho.js"></script>
     <script>
+      console.log("paho tag inserted");
+      console.log("script present?", document.querySelector('script[src$="paho.min.js"]')?.src);
+      console.log("Paho present?", !!(window.Paho && window.Paho.MQTT));
+    </script>
+    <script>
       if (!(window.Paho && window.Paho.MQTT)) {
         console.error("Paho not present after script load (likely blocked).");
       }
