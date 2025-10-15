@@ -161,8 +161,8 @@
             return new Promise((resolve, reject) => {
                 (function check() {
                     // Check if the global Paho object is available
-                    if (globalThis.Paho && globalThis.Paho.MQTT) {
-                        return resolve();
+                    if (globalThis.Paho && (globalThis.Paho.Client || (globalThis.Paho.MQTT && globalThis.Paho.MQTT.Client))) {
+                      resolve();
                     }
                     // If timeout is exceeded, reject the promise
                     if (performance.now() - start > timeout) {
@@ -407,37 +407,36 @@
 
         // --- MQTT Connection ---
         function initMqttClient() {
-            const P = globalThis.Paho;
-            if (!P || !P.MQTT) {
-                console.error("Paho MQTT library not loaded.");
-                mqttStatusEl.textContent = "Library not found";
-                return;
+          const P = window.Paho;
+          if (!P || !P.Client) {
+            mqttStatusEl.textContent = "Library not found";
+            return;
+          }
+          // WICHTIG: Pfad "/mqtt" für HiveMQ Cloud
+          mqttClient = new P.Client(
+            MQTT_CONFIG.hostname,
+            MQTT_CONFIG.port,
+            "/mqtt",
+            "app_" + Date.now()
+          );
+
+          mqttClient.onConnectionLost = onConnectionLost;
+          mqttClient.onMessageArrived = onMessageArrived;
+
+          mqttClient.connect({
+            userName: MQTT_CONFIG.username,
+            password: MQTT_CONFIG.password,
+            useSSL: true,
+            reconnect: true,
+            onSuccess: () => {
+              mqttStatusEl.textContent = "Connected";
+              mqttStatusEl.className = "font-semibold text-green-600";
+              mqttClient.subscribe(MQTT_CONFIG.baseTopic + "/+");
+            },
+            onFailure: err => {
+              mqttStatusEl.textContent = `Failed: ${err.errorMessage}`;
             }
-            try {
-                mqttClient = new P.MQTT.Client(
-                  MQTT_CONFIG.hostname,
-                  MQTT_CONFIG.port,
-                  "/mqtt",
-                  "app_" + Date.now()
-                );
-                mqttClient.onConnectionLost = onConnectionLost;
-                mqttClient.onMessageArrived = onMessageArrived;
-                mqttClient.connect({ 
-                    onSuccess: () => {
-                        mqttStatusEl.textContent = "Connected";
-                        mqttStatusEl.className = "font-semibold text-green-600";
-                        mqttClient.subscribe(MQTT_CONFIG.baseTopic + '/+');
-                    },
-                    onFailure: err => { 
-                        console.error("MQTT Connection failed:", err.errorMessage);
-                        mqttStatusEl.textContent = `Failed: ${err.errorMessage}`; 
-                    },
-                    userName: MQTT_CONFIG.username, password: MQTT_CONFIG.password, useSSL: true, reconnect: true
-                });
-            } catch (error) {
-                console.error("MQTT Initialization failed:", error);
-                mqttStatusEl.textContent = "Initialization Error";
-            }
+          });
         }
 
         function onConnectionLost(responseObject) {
