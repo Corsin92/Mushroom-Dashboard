@@ -97,7 +97,12 @@
          BEFORE the module script below is processed. This is the most reliable way 
          to handle this dependency in a single HTML file. -->
     <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.1.0/paho-mqtt.min.js"></script> -->
-    <script src="vendor/paho-mqtt.min.js"></script>
+    <script src="vendor/paho.min.js"></script>
+    <script>
+      if (!(window.Paho && window.Paho.MQTT)) {
+        console.error("Paho not present after script load (likely blocked).");
+      }
+    </script>
 
     <!-- Firebase SDK & App Logic -->
     <script type="module">
@@ -404,7 +409,12 @@
                 return;
             }
             try {
-                mqttClient = new P.MQTT.Client(MQTT_CONFIG.hostname, MQTT_CONFIG.port, "app_" + Date.now());
+                mqttClient = new P.MQTT.Client(
+                  MQTT_CONFIG.hostname,
+                  MQTT_CONFIG.port,
+                  "/mqtt",
+                  "app_" + Date.now()
+                );
                 mqttClient.onConnectionLost = onConnectionLost;
                 mqttClient.onMessageArrived = onMessageArrived;
                 mqttClient.connect({ 
